@@ -2,8 +2,8 @@
 /**
  * Plugin Name: Fat Rat Collect
  * Plugin URI: https://www.fatrat.cn
- * Description: 胖鼠采集(Fat Rat Collect) 是一款可以帮助你批量采集文章数据的开源插件，采集含括微信采集、公众号历史采集、登陆网站采集、简书采集、知乎采集、列表采集、详情采集。完美支持自动采集、自动发布文章。图片本地化、关键字替换、自动标签、动态内容、等其他黑科技。是您建站好帮手！如果你还会一点Html JQuery知识。那就太棒了。
- * Version: 2.7.4
+ * Description: 胖鼠采集(Fat Rat Collect) 是一款面向 WordPress 的自动化内容采集插件，支持微信公众号、简书、知乎、列表页、详情页等多种采集场景，并提供规则配置、自动采集、自动发布、图片本地化、自动标签和内容处理等能力。是您建站好帮手！如果你还会一点Html JQuery知识。那就太棒了。
+ * Version: 3.0.3
  * Author: Fat Rat
  * Author URI: https://www.fatrat.cn/about
  * Disclaimer: Use at your own risk. No warranty expressed or implied is provided.
@@ -17,7 +17,7 @@ if (!defined('WPINC')) {
 }
 
 global $frc_db_version;
-$frc_db_version = '2.7.1';
+$frc_db_version = '3.0.0';
 
 /**
  * Fire up Composer's autoloader
@@ -179,6 +179,11 @@ add_action( 'admin_enqueue_scripts', 'frc_loading_assets' );
  */
 function frc_loading_menu()
 {
+    $version_mode = get_option('frc_version_mode', 'both');
+    if ($version_mode === 'v3') {
+        return;
+    }
+
     add_menu_page(
         __('胖鼠采集', 'Fat Rat Collect'),
         __('胖鼠采集', 'Fat Rat Collect'),
@@ -357,6 +362,21 @@ add_action( 'wp_ajax_frc_interface', function (){
     wp_die();
 });
 
+add_action('wp_ajax_frc_version_mode', function () {
+    if (!current_user_can('manage_options')) {
+        wp_send_json(['code' => 5006, 'msg' => '权限不足']);
+        wp_die();
+    }
+    $mode = sanitize_text_field($_REQUEST['mode'] ?? '');
+    if (!in_array($mode, ['v2', 'v3', 'both'])) {
+        wp_send_json(['code' => 400, 'msg' => '无效的版本模式']);
+        wp_die();
+    }
+    update_option('frc_version_mode', $mode);
+    wp_send_json(['code' => 200, 'msg' => '版本模式已更新']);
+    wp_die();
+});
+
 /**
  * add cron operating time
  * @return array
@@ -426,3 +446,9 @@ function frc_plugin_uninstall() {
 
 }
 register_uninstall_hook(__FILE__, 'frc_plugin_uninstall');
+
+/**
+ * V3 版本 - Vue3 + REST API
+ * 新增菜单，不修改原有功能
+ */
+require_once __DIR__ . '/v3/autoload.php';

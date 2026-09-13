@@ -71,7 +71,7 @@ class FRC_Spider
         $options = new FRC_Options();
         $option = $options->lazy_person($name);
 
-        return $this->response(FRC_ApiError::SUCCESS, $this->single_spider($option, $urls), $name .'数据处理完成, F12可查看单条数据具体采集结果喔');
+        return $this->response(FRC_ApiError::SUCCESS, $this->single_spider($option, $urls), $name .'详情采集完成');
     }
 
     private function wx_url_format($urls){
@@ -106,7 +106,7 @@ class FRC_Spider
             return ['code' => FRC_ApiError::FAIL, 'msg' => '未查询到配置, 配置ID错误'];
         }
 
-        return $this->response(FRC_ApiError::SUCCESS, $this->single_spider($option, $urls));
+        return $this->response(FRC_ApiError::SUCCESS, $this->single_spider($option, $urls), '详情采集完成');
     }
 
 
@@ -137,15 +137,14 @@ class FRC_Spider
 
         $articles = $this->_QlObject($config)->absoluteUrl($config)->query(function($item) use ($option, $config) {
             if ($this->checkPostLink($item['link'])){
-                return $this->format($item, '已滤重');
+                return $this->format($item, '数据已滤重，采集跳过');
             }
 
             $config->url = $item['link'];
             $config->range = $option['collect_content_range'];
             $config->rules = $this->rulesFormat($option['collect_content_rules']);
-            $detail = $this->_QlObject($config)->absoluteUrl($config)->downloadImage($config)->special($config)->query()->getDataAndRelease();
-            $detail = array_merge($item, empty($detail)?[]:current($detail));
-            $this->paging($detail, $config);
+            $detail = $this->fetch_detail_with_meta($config, true);
+            $detail = array_merge($item, $detail);
             return $this->insert_article($detail, $option);
         })->getDataAndRelease();
 
@@ -202,23 +201,20 @@ class FRC_Spider
                 $config->src = $option['collect_image_attribute'];
                 $config->pn = $digital;
 
-                $result['url'] = str_replace('{page}', $config->pn, $config->url);
                 $article = $this->_QlPagingObject($config)->absoluteUrl($config)->query(function($item) use ($option, $config) {
                     if ($this->checkPostLink($item['link'])){
-                        return $this->format($item, '已滤重');
+                        return $this->format($item, '数据已滤重，采集跳过');
                     }
 
                     $config->url = $item['link'];
                     $config->range = $option['collect_content_range'];
                     $config->rules = $this->rulesFormat($option['collect_content_rules']);
-                    $detail = $this->_QlObject($config)->absoluteUrl($config)->downloadImage($config)->special($config)->query()->getDataAndRelease();
-                    $detail = array_merge($item, empty($detail)?[]:current($detail));
-                    $this->paging($detail, $config);
+                    $detail = $this->fetch_detail_with_meta($config, true);
+                    $detail = array_merge($item, $detail);
                     return $this->insert_article($detail, $option);
                 })->getDataAndRelease();
-                $result['data'] = $article;
-                return $result;
-            });
+                return $article;
+            })->flatten(1)->values()->all();
         } else {
             $config = new stdClass();
             $config->url = $option['collect_list_url'];
@@ -232,19 +228,17 @@ class FRC_Spider
             $config->pn = $history_page_number;
             $article = $this->_QlPagingObject($config)->absoluteUrl($config)->query(function($item) use ($option, $config) {
                 if ($this->checkPostLink($item['link'])){
-                    return $this->format($item, '已滤重');
+                    return $this->format($item, '数据已滤重，采集跳过');
                 }
 
                 $config->url = $item['link'];
                 $config->range = $option['collect_content_range'];
                 $config->rules = $this->rulesFormat($option['collect_content_rules']);
-                $detail = $this->_QlObject($config)->absoluteUrl($config)->downloadImage($config)->query()->getDataAndRelease();
-                $detail = array_merge($item, current($detail)??'');
-                $this->paging($detail, $config);
+                $detail = $this->fetch_detail_with_meta($config, false);
+                $detail = array_merge($item, $detail);
                 return $this->insert_article($detail, $option);
             })->getDataAndRelease();
-            $articles['rolling'] = $history_page_number;
-            $articles['data'] = $article;
+            $articles = $article;
         }
 
         return $this->response(FRC_ApiError::SUCCESS, $articles, '分页采集完成');
@@ -293,15 +287,14 @@ class FRC_Spider
         $articles = $articles->map(function ($link) use ($config, $option) {
             $item['link'] = $link;
             if ($this->checkPostLink($item['link'])){
-                return $this->format($item, '已滤重');
+                return $this->format($item, '数据已滤重，采集跳过');
             }
             $config->url = $item['link'];
             $config->range = $option['collect_content_range'];
             $config->rules = $this->rulesFormat($option['collect_content_rules']);
             $config->pure = false;
-            $detail = $this->_QlObject($config)->absoluteUrl($config)->downloadImage($config)->query()->getDataAndRelease();
-            $detail = array_merge($item, empty($detail)?[]:current($detail));
-            $this->paging($detail, $config);
+            $detail = $this->fetch_detail_with_meta($config, false);
+            $detail = array_merge($item, $detail);
             return $this->insert_article($detail, $option);
         });
 
@@ -325,8 +318,31 @@ class FRC_Spider
         }
 
         $detail = $this->_QlObject($config)->absoluteUrl($config)->query()->getDataAndRelease();
+        if (empty($detail)) {
+            $detail = [[
+                'http_status_code' => $config->http_status_code ?? null,
+            ]];
+            if (($config->http_status_code ?? 200) !== 200 && !empty($config->response_content)) {
+                $detail[0]['response_content'] = $config->response_content;
+            }
+        }
+        $detail = array_map(function ($item) use ($config) {
+            $item = (array)$item;
+            $item['http_status_code'] = $config->http_status_code ?? null;
+            if (($config->http_status_code ?? 200) !== 200 && !empty($config->response_content)) {
+                $item['response_content'] = $config->response_content;
+            } else {
+                unset($item['response_content']);
+            }
+            return $item;
+        }, $detail);
 
-        return $this->response(FRC_ApiError::SUCCESS, $detail, '调试完成, 请在F12中查看');
+        $response = $this->response(FRC_ApiError::SUCCESS, $detail, '调试完成, 请在F12中查看');
+        $response['http_status_code'] = $config->http_status_code ?? null;
+        if (($config->http_status_code ?? 200) !== 200 && !empty($config->response_content)) {
+            $response['response_content'] = $config->response_content;
+        }
+        return $response;
     }
 
 
@@ -362,72 +378,153 @@ class FRC_Spider
         //ps 优化点 这个fakeid 可以存在option里 不用每次都去查
         $url = 'https://mp.weixin.qq.com/cgi-bin/searchbiz?action=search_biz&begin=0&count=5&token='.$token.'&lang=zh_CN&f=json&ajax=1&query='.urlencode($appName);
         $result = $client->request("get",$url,[
-            "cookies"=>$cookieJar
-        ])
+                "cookies"=>$cookieJar
+            ])
             ->getBody()
             ->getContents();
-        if (!empty($result)) {
-            $result = json_decode($result,true);
-            if (!isset($result["base_resp"]["ret"]) && $result["base_resp"]["ret"] != 0) return $this->response(FRC_ApiError::FAIL, null, '请检查公众号名称是否有误，未搜索到相关公众号');
-            $list = $result["list"];
-            $fakeId = '';
-            foreach ($list as $item) {
-                if ($item["nickname"] == $appName)
-                {
-                    $fakeId = $item['fakeid'];
-                }
-            }
-            if (empty($fakeId))  return $this->response(FRC_ApiError::FAIL, null, '请检查公众号名称是否有误，未搜索到相关公众号');
-            $listUrl = 'https://mp.weixin.qq.com/cgi-bin/appmsgpublish?sub=list&search_field=null&';
-
-            $options = new FRC_Options();
-            $option = $options->lazy_person("微信");
-
-            if (!$this->checkWechatHistoryTimeLimit($page)) return $this->response(FRC_ApiError::FAIL, null, '为保护鼠友公众号安全，单日采集最大页数不能超过500页');
-
-            for ($i = 0; $i < $page; $i++)
+        if (empty($result)) {
+	        return $this->response(FRC_ApiError::FAIL, null,  '网络错误, 请重试1. ');
+        }
+        $result = json_decode($result,true);
+        if (isset($result["base_resp"]["ret"]) && $result["base_resp"]["ret"] != 0){
+	        return $this->response(FRC_ApiError::FAIL, null, '请检查公众号名称是否有误，未搜索到相关公众号.'.$result["base_resp"]["err_msg"]);
+        }
+        $list = $result["list"];
+        $fakeId = '';
+        foreach ($list as $item) {
+            if ($item["nickname"] == $appName)
             {
-                sleep(3);
-                $begin = $startNumber == 1 ? 0 : $startNumber * 20 + $i * 20;
+                $fakeId = $item['fakeid'];
+            }
+        }
+        if (empty($fakeId)){
+	        return $this->response(FRC_ApiError::FAIL, null, '请检查公众号名称是否有误，未搜索到相关公众号');
+        }
 
-                $listUrl .= 'begin='.$begin.'&count=20&query=&fakeid='.$fakeId.'&type=101_1&free_publish_type=1&sub_action=list_ex&token='.$token.'&lang=zh_CN&f=json&ajax=1';
+        $options = new FRC_Options();
+        $option = $options->lazy_person("微信");
 
-                $result = $client->request("get",$listUrl,[
-                    "cookies"=>$cookieJar
-                ])
-                    ->getBody()
-                    ->getContents();
-                if (!empty($result)) {
-                    $result = json_decode($result, true);
-                    if (!isset($result["base_resp"]["ret"]) && $result["base_resp"]["ret"] != 0) return $this->response(FRC_ApiError::FAIL, null, $result["base_resp"]["err_msg"]);
+//        if (!$this->checkWechatHistoryTimeLimit($page))
+//            return $this->response(FRC_ApiError::FAIL, null, '为保护鼠友公众号安全，单日采集最大页数不能超过500页');
 
-                    $publishPage = json_decode($result["publish_page"],true);
-                    foreach ($publishPage["publish_list"] as $item) {
-                        //每期发布的文章
-                        $articles = json_decode($item["publish_info"],true)['appmsgex'];
-                        foreach ($articles as $article) {
-                            //每期的每一篇文章
-                            if ($this->checkPostLink($article['link'])) continue;
+        $articles = [];
+        for ($i = 0; $i < $page; $i++)
+        {
+            sleep(2);
+            if ($startNumber == 1 && $i == 0){
+	            $begin = 0;
+            } else {
+	            $begin = ($startNumber * 20) + ($i * 20);
+            }
+	        $listUrl = 'https://mp.weixin.qq.com/cgi-bin/appmsgpublish?sub=list&search_field=null&';
+            $listUrl .= 'begin='.$begin.'&count=20&query=&fakeid='.$fakeId.'&type=101_1&free_publish_type=1&sub_action=list_ex&token='.$token.'&lang=zh_CN&f=json&ajax=1';
 
-                            $data['status'] = 1;
-                            $data['option_id'] = $option['id'];
-                            $data['cover'] = isset($article['cover']) ? $article['cover'] : '';
-                            $data['link'] = $article['link'];
-                            $data['title'] = mb_substr($this->text_keyword_replace($article['title'], $option), 0, 120);
-                            $data['content'] = "";
-                            $data['message'] = 'Wait.';
-                            $data['created_at'] = current_time('mysql');
-                            $data['updated_at'] = current_time('mysql');
-                            $this->wpdb->insert($this->table_post, $data);
-                        }
+            $listStatusCode = null;
+	        try {
+                $response = $client->request("get", $listUrl, [
+			        "cookies" => $cookieJar,
+                    "http_errors" => false,
+		        ]);
+                $listStatusCode = $response->getStatusCode();
+		        $result = $response->getBody()->getContents();
+
+		        if (empty($result)) {
+			        $articles[] = [
+                        'link' => $listUrl,
+                        'title' => '',
+                        'content' => '',
+                        'paging' => '',
+                        'http_status_code' => $listStatusCode,
+                        'message' => '数据获取失败',
+                        'success' => false,
+                    ];
+			        continue;
+		        }
+	        } catch ( \GuzzleHttp\Exception\GuzzleException $e ) {
+                if (method_exists($e, 'getResponse') && $e->getResponse()) {
+                    $listStatusCode = $e->getResponse()->getStatusCode();
+                }
+		        $articles[] = [
+                    'link' => $listUrl,
+                    'title' => '',
+                    'content' => '',
+                    'paging' => '',
+                    'http_status_code' => $listStatusCode,
+                    'message' => $e->getMessage(),
+                    'success' => false,
+                ];
+		        continue;
+	        }
+
+            $result = json_decode($result, true);
+            if (!isset($result["base_resp"]["ret"]) || $result["base_resp"]["ret"] != 0){
+	            $articles[] = [
+                    'link' => $listUrl,
+                    'title' => '',
+                    'content' => '',
+                    'paging' => '',
+                    'http_status_code' => $listStatusCode,
+                    'message' => $result["base_resp"]["err_msg"] ?? '数据获取失败',
+                    'success' => false,
+                ];
+                continue;
+            }
+
+            $publishPage = json_decode($result["publish_page"],true);
+            foreach ($publishPage["publish_list"] as $key => $item) {
+                $appmsgex = json_decode($item["publish_info"],true)['appmsgex'];
+                foreach ($appmsgex as $article) {
+                    if ($this->checkPostLink($article['link'])) {
+	                    $articles[] = [
+		                    'link' => $article['link'],
+		                    'title' => $article['title'] ?? '',
+		                    'message' => '过滤',
+		                    'success' => true,
+	                    ];
+                        continue;
                     }
-                    return $this->response(FRC_ApiError::SUCCESS, null, "采集完成，请到数据桶查看");
-                }else{
-                    return $this->response(FRC_ApiError::FAIL, null,  '网络错误, 请重试. ');
+
+                    $data['status'] = 1;
+                    $data['option_id'] = $option['id'];
+                    $data['cover'] = isset($article['cover']) ? $article['cover'] : '';
+                    $data['link'] = $article['link'];
+                    $data['title'] = mb_substr($this->text_keyword_replace($article['title'], $option), 0, 120);
+                    $data['content'] = "";
+                    $data['message'] = 'Wait.';
+                    $data['created_at'] = current_time('mysql');
+                    $data['updated_at'] = current_time('mysql');
+                    $this->wpdb->insert($this->table_post, $data);
+
+                    $spiderResult = $this->single_spider($option, $article['link']);
+                    $result = is_array($spiderResult) && isset($spiderResult[0]) ? $spiderResult[0] : null;
+
+                    if ($result && !empty($result['success'])) {
+	                    $articles[] = [
+                            'link' => $data['link'],
+                            'title' => $data['title'],
+                            'message' => '采集完成',
+                            'success' => true,
+                        ];
+                    } else {
+                        $failedMsg = $result['message'] ?? '详情采集失败';
+                        $this->wpdb->update($this->table_post, [
+                            'status' => 5,
+                            'message' => $failedMsg,
+                        ], ['link' => $data['link']]);
+	                    $articles[] = [
+                            'link' => $data['link'],
+                            'title' => $data['title'],
+                            'content' => $result['content'] ?? '',
+                            'paging' => $result['paging'] ?? '',
+                            'http_status_code' => $result['http_status_code'] ?? null,
+                            'message' => $failedMsg,
+                            'success' => false,
+                        ];
+                    }
                 }
             }
-        }else return $this->response(FRC_ApiError::FAIL, null,  '网络错误, 请重试. ');
-
+        }
+	    return $this->response(FRC_ApiError::SUCCESS, $articles, "采集完成，请到数据桶查看");
     }
 
     /**
@@ -454,15 +551,29 @@ class FRC_Spider
         isset($option["collect_cookie"]) && $config->cookie = $option["collect_cookie"];
         $article = collect(explode(' ', $urls))->map(function($url) use ($config, $option) {
             $config->url = $url;
-            $detail = $this->_QlObject($config)->absoluteUrl($config)->downloadImage($config)->special($config)->query()->getDataAndRelease();
-            $detail = array_merge(['link' => $url], (array)current($detail));
-            $this->paging($detail, $config);
+            $detail = $this->fetch_detail_with_meta($config, true);
             $option["url"] = $url;
             return $this->insert_article($detail, $option);
         });
 
 
-        return ['message' => '处理完成', 'data' => $article];
+        return $article->toArray();
+    }
+
+    private function fetch_detail_with_meta($config, $useSpecial = false)
+    {
+        $ql = $this->_QlObject($config)->absoluteUrl($config)->downloadImage($config);
+        if ($useSpecial) {
+            $ql->special($config);
+        }
+        $detail = $ql->query()->getDataAndRelease();
+        $detail = array_merge(['link' => $config->url], empty($detail) ? [] : (array) current($detail));
+        $this->paging($detail, $config);
+        $detail['http_status_code'] = $config->http_status_code ?? null;
+        if (($config->http_status_code ?? 200) !== 200 && !empty($config->response_content)) {
+            $detail['response_content'] = $config->response_content;
+        }
+        return $detail;
     }
 
 
@@ -546,16 +657,15 @@ class FRC_Spider
             // 采集列表
             $articles = $this->_QlObject($config)->absoluteUrl($config)->query(function($item) use ($option, $config) {
                 if ($this->checkPostLink($item['link'])){
-                    return $this->format($item, '已滤重');
+                    return $this->format($item, '数据已滤重，采集跳过');
                 }
 
                 // 采集详情
                 $config->url = $item['link'];
                 $config->range = $option['collect_content_range'];
                 $config->rules = $this->rulesFormat($option['collect_content_rules']);
-                $detail = $this->_QlObject($config)->absoluteUrl($config)->downloadImage($config)->query()->getDataAndRelease();
-                $detail = array_merge($item, empty($detail)?[]:current($detail));
-                $this->paging($detail, $config);
+                $detail = $this->fetch_detail_with_meta($config, false);
+                $detail = array_merge($item, $detail);
 
                 return $this->insert_article($detail, $option);
             })->getDataAndRelease();
@@ -586,28 +696,58 @@ class FRC_Spider
         }
 
         $head = [
-            'timeout' => 100
+            'timeout' => 100,
+            'verify' => false,
+            'http_errors' => false,
+            'allow_redirects' => true,
+            'headers' => [
+                'referer' => $config->url,
+                'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
+            ]
         ];
-        if ($option->cookie)
+        if (!empty($option->cookie))
         {
-            $head['headers'] = [
-                'Cookie'    => $option->cookie,
-            ];
+            $head['headers']['Cookie'] = $option->cookie;
         }
+        $option->http_status_code = null;
+        $option->response_content = '';
         try{
             if ($config->rendering == 1) {
-                if ($config->remove_head == 3){
-                    $ql->getTransCoding($config->url);
-                } else {
-                    $ql->get( $config->url ,null, $head);
+                $response = (new \GuzzleHttp\Client())->request('GET', $config->url, $head);
+                $html = (string)$response->getBody();
+                $option->http_status_code = $response->getStatusCode();
+                $option->response_content = $html;
+                if ($config->remove_head == 3) {
+                    $encode = mb_detect_encoding($html, ["ASCII", "UTF-8", "GB2312", "GBK", "BIG5"]);
+                    if (!empty($encode)) {
+                        $convertedHtml = @iconv($encode, "utf-8//IGNORE", $html);
+                        if ($convertedHtml !== false) {
+                            $html = $convertedHtml;
+                        }
+                    }
                 }
+                $ql->setHtml($html);
             } elseif ($config->rendering == 2) {
                 $ql->use(Chrome::class);
                 $options = ['args' => ['--no-sandbox', '--disable-setuid-sandbox'], 'timeout' => 10000];
-                $ql->chrome($config->url, $options);
+                $ql->chrome(function ($page, $browser) use ($config, $option) {
+                    $response = $page->goto($config->url);
+                    $html = $page->content();
+                    $option->http_status_code = $response ? $response->status() : null;
+                    $option->response_content = $html;
+                    $browser->close();
+                    return $html;
+                }, $options);
             }
-        } catch (Exception $e){
-            $ql->setHtml('');
+        } catch (\Throwable $e){
+            if (method_exists($e, 'getResponse') && $e->getResponse()) {
+                $option->http_status_code = $e->getResponse()->getStatusCode();
+                $option->response_content = (string)$e->getResponse()->getBody();
+                $ql->setHtml($option->response_content);
+            } else {
+                $option->response_content = $e->getMessage();
+                $ql->setHtml('');
+            }
             // http error
         }
         $ql->encoding('UTF-8');
@@ -726,7 +866,7 @@ class FRC_Spider
             {
                 $this->wpdb->update($this->table_post, ['status'=>5,'Message'=>"文章已被删除或者文章格式不正确"],["id"=>$info[0]["id"]]);
             }
-            return $this->format($article, '内容错误, 出现这个错误是 title 或者 content是空的没获取到。 首先请确保使用debugging的时候是正常的, 可能出现的问题有：目标站有防采集策略、请求频率限制、js跳转拦截策略、或者其他防采集策略, 如果是列表/分页采集、前面一些数据是正常的，后面的出现内容错误，极有可能是命中了访问频率限制策略或js跳转策略。');
+            return $this->format($article, '内容获取异常，常见原因：目标站点开启防采集机制、请求频率受限、JS 跳转拦截及其他反爬策略。若为列表 / 分页采集，前期数据正常、后续内容报错，基本是触发了访问频率限制或 JS 跳转拦截策略。');
         }
 
         if (!empty($option['collect_custom_content'])){
@@ -890,7 +1030,22 @@ class FRC_Spider
      */
     protected function format($article, $msg = ''){
         $article['message'] = $msg;
-        $article['content'] = !empty($article['content']) ? mb_substr($article['content'], 0, 100).'.....' : '';
+        $article['success'] = (strpos($msg, '错误') === false && strpos($msg, '失败') === false);
+        if (empty($article['content']) && !empty($article['response_content'])) {
+            $article['content'] = $article['response_content'];
+        }
+        $contentLimit = $article['success'] ? 100 : 1500;
+        $article['content'] = !empty($article['content']) ? mb_substr($article['content'], 0, $contentLimit).'.....' : '';
+        if ($article['success']) {
+            unset($article['http_status_code']);
+            unset($article['response_content']);
+        } else {
+            $article['link'] = $article['link'] ?? '';
+            $article['title'] = $article['title'] ?? '';
+            $article['paging'] = $article['paging'] ?? '';
+            $article['http_status_code'] = $article['http_status_code'] ?? null;
+            $article['response_content'] = $article['response_content'] ?? '';
+        }
 
         return $article;
     }
@@ -965,6 +1120,8 @@ function frc_spider()
 <!--            --><?php //} ?>
 <!--            <li><a href="#todolist" data-toggle="tab">Todo & 胖鼠</a></li>-->
 <!--        </ul>-->
+        <div class="spider-layout">
+            <div class="spider-layout-left">
         <nav>
             <div class="nav nav-tabs" id="nav-tab" role="tablist">
                 <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#single_wx" type="button">微信爬虫</button>
@@ -1266,6 +1423,19 @@ function frc_spider()
                     </ul>
                     <hr />
                     <?php require_once(plugin_dir_path(__DIR__) . 'views/todo.html'); ?>
+                </div>
+            </div>
+        </div>
+            </div>
+            <div class="spider-layout-right">
+                <div class="spider-result-panel">
+                    <div class="spider-result-header">
+                        采集结果
+                        <span class="spider-result-clear">清空</span>
+                    </div>
+                    <div class="spider-result-body">
+                        <div class="spider-result-empty">点击采集按钮，结果将显示在这里</div>
+                    </div>
                 </div>
             </div>
         </div>

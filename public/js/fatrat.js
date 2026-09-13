@@ -542,6 +542,23 @@
         frc_play_flag = false
     }
 
+    function spider_show_result(message, type) {
+        type = type || 'success';
+        var now = new Date();
+        var time = ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2) + ':' + ('0' + now.getSeconds()).slice(-2);
+        var $body = $('.spider-result-body');
+        $body.find('.spider-result-empty').remove();
+        var $item = $('<div class="spider-result-item ' + type + '"><span class="spider-result-time">' + time + '</span>' + message + '</div>');
+        $body.prepend($item);
+        $body.scrollTop(0);
+    }
+
+    $('.spider-result-clear').on('click', function(){
+        var $body = $('.spider-result-body');
+        $body.empty();
+        $body.append('<div class="spider-result-empty">点击采集按钮，结果将显示在这里</div>');
+    });
+
     function ajax_collect_request_tool(request_url, data, progress_bar = '', input_disabled = '') {
         // console.log(request_url, data, progress_bar, input_disabled);
 
@@ -550,6 +567,7 @@
             dataType: 'json',
             data: $.extend({action: 'frc_interface', interface_type: 1,csrf:$("#wp-frc-csrf").val()}, data),
             beforeSend : function(){
+                spider_show_result('正在采集...', 'info');
                 if (progress_bar != ''){
                     $(progress_bar).css('width', '20%');
                     setTimeout(function() {
@@ -573,9 +591,50 @@
                 }
                 setTimeout(function() {
                     if (response.code == 200) {
-                        alert(response.msg);
+                        var data = response.data || [];
+                        if (!Array.isArray(data)) {
+                            data = [];
+                        }
+                        var total = data.length;
+                        var successCount = 0;
+                        var errorCount = 0;
+
+                        data.forEach(function(item) {
+                            if (item.success !== false) {
+                                successCount++;
+                            } else {
+                                errorCount++;
+                            }
+                        });
+
+                        // 先展示每条数据的详细结果
+                        data.forEach(function(item, idx) {
+                            var status = item.success !== false ? '✓' : '✗';
+                            var type = item.success !== false ? 'success' : 'error';
+                            var title = item.title || '-';
+                            var contentPreview = '';
+                            if (item.content) {
+                                var text = item.content.replace(/<[^>]+>/g, '').trim();
+                                contentPreview = text.length > 10 ? text.substring(0, 10) + '…' : text;
+                            }
+                            var linkHtml = item.link ? '<a href="' + item.link + '" target="_blank" class="spider-result-link">查看原文 →</a>' : '';
+
+                            var row = '<div class="spider-result-row">';
+                            row += '<span class="spider-result-badge ' + type + '">' + status + ' ' + (idx + 1) + '/' + total + '</span>';
+                            row += '<div class="spider-result-detail">';
+                            row += '<div class="spider-result-title">' + title + '</div>';
+                            if (contentPreview) row += '<div class="spider-result-content">' + contentPreview + '</div>';
+                            row += '<div class="spider-result-meta">';
+                            row += '<span class="spider-result-msg ' + type + '">' + item.message + '</span>';
+                            row += linkHtml;
+                            row += '</div></div></div>';
+                            spider_show_result(row, type);
+                        });
+
+                        // 最后展示汇总 (prepend 到最顶部)
+                        spider_show_result('<strong>✓</strong> ' + response.msg + ' | 共采集 <strong>' + total + '</strong> 条，成功 ' + successCount + ' 条，失败 ' + errorCount + ' 条', 'success');
                     } else {
-                        alert('错误: '+response.msg);
+                        spider_show_result('<strong>✗ 错误:</strong> ' + response.msg, 'error');
                     }
                 }, 500);
             },
@@ -592,7 +651,7 @@
                 }, 2000);
             },
             error: function(error) {
-                alert('网络超时! 如果你点击后立刻出现此错误那是你的采集规则写错了,请排查规则错误. 如果你已经等待采集了很久, 那就是正常的网络超时哦. 去数据中心看看是不是已经下载好了.');
+                spider_show_result('<strong>✗ 网络超时!</strong> 如果你点击后立刻出现此错误那是你的采集规则写错了,请排查规则错误. 如果你已经等待采集了很久, 那就是正常的网络超时哦. 去数据中心看看是不是已经下载好了.', 'error');
                 if (progress_bar != ''){
                     $(progress_bar).css('width', '0%');
                 }
@@ -695,5 +754,52 @@
             }
         })
     }
+
+    $('.frc-version-card').on('click', function(){
+        var mode = $(this).data('mode');
+        $('#frc-version-mode').val(mode);
+        $('.frc-version-card').removeClass('frc-version-active').each(function(){
+            var $card = $(this);
+            var m = $card.data('mode');
+            var active = m === mode;
+            $card.css({
+                borderColor: active ? (m === 'v2' ? '#e6a23c' : m === 'v3' ? '#409eff' : '#67c23a') : '#dee2e6',
+                background: active ? (m === 'v2' ? '#fef9f0' : m === 'v3' ? '#ecf5ff' : '#f0f9eb') : '#fff'
+            });
+            if (active) $card.addClass('frc-version-active');
+            $card.find('span:first').toggle(active);
+            var color = m === 'v2' ? '#e6a23c' : m === 'v3' ? '#409eff' : '#67c23a';
+            var bg = m === 'v2' ? '#fdf6ec' : m === 'v3' ? '#ecf5ff' : '#f0f9eb';
+            $card.find('div:first').css({
+                background: active ? color : bg,
+                color: active ? '#fff' : color
+            });
+        });
+    });
+
+    $('.frc-version-save').on('click', function(){
+        var mode = $('#frc-version-mode').val();
+        var $btn = $(this);
+        var $msg = $('#frc-version-msg');
+        $btn.prop('disabled', true).val('保存中...');
+        $.ajax(ajaxurl, {
+            method: 'POST',
+            dataType: 'json',
+            data: { action: 'frc_version_mode', mode: mode },
+            success: function(res) {
+                if (res.code === 200) {
+                    $msg.css({color: '#67c23a'}).text(res.msg + '，页面即将刷新').show();
+                    setTimeout(function(){ location.reload(); }, 1200);
+                } else {
+                    $msg.css({color: '#f56c6c'}).text(res.msg || '保存失败').show();
+                    $btn.prop('disabled', false).val('保存设置');
+                }
+            },
+            error: function() {
+                $msg.css({color: '#f56c6c'}).text('网络错误').show();
+                $btn.prop('disabled', false).val('保存设置');
+            }
+        });
+    });
 
 })(jQuery);
